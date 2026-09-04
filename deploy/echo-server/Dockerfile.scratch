@@ -1,0 +1,15 @@
+# FROM scratch 版本 — 适用于无法拉取基础镜像的环境
+#
+# 使用前先交叉编译（或直接 make image-echo）:
+#   cd deploy/echo-server
+#   GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o ../../echo-server-linux-amd64 .
+#   cd ../..
+#
+# 然后构建镜像:
+#   docker build --platform linux/amd64 \
+#     -f deploy/echo-server/Dockerfile.scratch \
+#     -t yhg.hub.bjuci.io/library/echo-server:latest .
+FROM scratch
+COPY echo-server-linux-amd64 /echo-server
+EXPOSE 80
+ENTRYPOINT ["/echo-server"]

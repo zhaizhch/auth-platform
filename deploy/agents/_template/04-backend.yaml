@@ -1,0 +1,61 @@
+# ============================================================
+# 模板：单个 Agent 的业务服务（每 Agent 一份）
+# 只开放 ClusterIP，不对外暴露；唯一入口是 Envoy Gateway (HTTPRoute)
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: __AGENT__
+  namespace: auth-platform
+  labels:
+    app: __AGENT__
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: __AGENT__
+  template:
+    metadata:
+      labels:
+        app: __AGENT__
+    spec:
+      containers:
+      - name: __AGENT__
+        image: yhg.hub.bjuci.io/library/echo-server:latest
+        imagePullPolicy: Always
+        ports:
+        - name: http
+          containerPort: 80
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 80
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "50m"
+          limits:
+            memory: "64Mi"
+            cpu: "200m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: __AGENT__
+  namespace: auth-platform
+spec:
+  selector:
+    app: __AGENT__
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 80
+  type: ClusterIP

@@ -1,0 +1,20 @@
+# __AGENT__ 的 HTTPRoute：hostname → 后端 Service
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: __AGENT__
+  namespace: auth-platform
+spec:
+  parentRefs:
+  - name: agents
+    sectionName: https
+  hostnames:
+  - __DOMAIN__
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: __AGENT__
+      port: 8080

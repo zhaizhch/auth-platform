@@ -1,0 +1,19 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: agent2
+  namespace: auth-platform
+spec:
+  parentRefs:
+  - name: agents
+    sectionName: https
+  hostnames:
+  - agent2.example.com
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: agent2
+      port: 8080

@@ -1,0 +1,255 @@
+# ===========================================================
+# Logto — 自建 OIDC 认证中心（替代 sso.example.com）
+#
+# 端口规划（LoadBalancer 172.31.9.58，均启用 HTTPS）：
+#   3001  ENDPOINT       用户端（登录/注册体验 + OIDC 端点）
+#   3002  ADMIN_ENDPOINT 管理控制台（/console，SPA + Admin API）
+#
+# 注意：
+#   - ENDPOINT 必须指向 3001、ADMIN_ENDPOINT 指向 3002，二者不能相同；
+#     否则 core 会把 3002 上的请求当作用户端流量，/console 会被
+#     fallback 到 experience SPA，浏览器前端路由渲染 404。
+#   - 必须走 HTTPS：console 登录使用 PKCE，依赖浏览器 crypto.subtle，
+#     而该 API 仅在安全上下文（HTTPS / localhost）下可用，
+#     纯 HTTP 下登录会报 "Crypto.subtle is unavailable"。
+#     证书由 logto-tls secret 提供（HTTPS_CERT_PATH / HTTPS_KEY_PATH）。
+#     访问机器的浏览器需信任自签 CA（见 certs/ca.crt）。
+#   - logto-db 数据落在 emptyDir，Pod 重建后数据丢失；
+#     生产环境应改用 PVC。
+# ===========================================================
+
+# ---------- PostgreSQL（Logto 数据库） ----------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: logto-db
+  namespace: auth-platform
+  labels:
+    app: logto-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: logto-db
+  template:
+    metadata:
+      labels:
+        app: logto-db
+    spec:
+      containers:
+      - name: postgres
+        image: yhg.hub.bjuci.io/library/postgres:16-alpine-amd64
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: pg
+          containerPort: 5432
+        env:
+        - name: POSTGRES_USER
+          value: logto
+        - name: POSTGRES_PASSWORD
+          value: logto
+        - name: POSTGRES_DB
+          value: logto
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+      volumes:
+      - name: data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: logto-db
+  namespace: auth-platform
+spec:
+  selector:
+    app: logto-db
+  ports:
+  - port: 5432
+    targetPort: 5432
+  type: ClusterIP
+
+# ---------- Logto Core ----------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: logto
+  namespace: auth-platform
+  labels:
+    app: logto
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: logto
+  template:
+    metadata:
+      labels:
+        app: logto
+    spec:
+      initContainers:
+      - name: logto-migrate
+        image: yhg.hub.bjuci.io/library/logto:amd64
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          npm run cli -- db seed --dapc --skip-when-exists &&
+          npm run alteration -- deploy latest &&
+          # 种子只创建了租户组织（t-default/t-admin）和默认管理员（admin），
+          # 但没有建立成员关系，导致控制台刷新组织令牌时 403
+          # （"user is not a member of the organization"）。
+          # 这里把 admin 用户补进 t-default 组织并授予 admin 角色。
+          node <<'NODE'
+          const { Pool } = require('pg');
+          const pool = new Pool({ connectionString: process.env.DB_URL });
+          (async () => {
+            await pool.query(
+              "INSERT INTO organization_user_relations (tenant_id, organization_id, user_id) "
+              + "SELECT 'admin', 't-default', id FROM users WHERE username = 'admin' "
+              + "ON CONFLICT DO NOTHING"
+            );
+            await pool.query(
+              "INSERT INTO organization_role_user_relations (tenant_id, organization_id, organization_role_id, user_id) "
+              + "SELECT 'admin', 't-default', 'admin', id FROM users WHERE username = 'admin' "
+              + "ON CONFLICT DO NOTHING"
+            );
+          })().finally(() => pool.end());
+          NODE
+        env:
+        - name: DB_URL
+          value: postgresql://logto:logto@logto-db:5432/logto
+      containers:
+      - name: logto
+        image: yhg.hub.bjuci.io/library/logto:amd64
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 3001
+        - name: admin
+          containerPort: 3002
+        env:
+        - name: DB_URL
+          value: postgresql://logto:logto@logto-db:5432/logto
+        # 用户端公开入口（登录/注册 + OIDC）
+        - name: ENDPOINT
+          value: https://172.31.9.58:3001
+        # 管理控制台公开入口（/console）
+        - name: ADMIN_ENDPOINT
+          value: https://172.31.9.58:3002
+        # HTTPS 证书（来自 logto-tls secret，两者同时设置时 core 启用 HTTPS）
+        - name: HTTPS_CERT_PATH
+          value: /etc/logto/certs/tls.crt
+        - name: HTTPS_KEY_PATH
+          value: /etc/logto/certs/tls.key
+        - name: TRUST_PROXY_HEADERS
+          value: "1"
+        - name: PORT
+          value: "3001"
+        volumeMounts:
+        - name: logto-tls
+          mountPath: /etc/logto/certs
+          readOnly: true
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 1536Mi
+      volumes:
+      - name: logto-tls
+        secret:
+          secretName: logto-tls
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: logto
+  namespace: auth-platform
+spec:
+  selector:
+    app: logto
+  loadBalancerIP: 172.31.9.58
+  ports:
+  - name: core
+    port: 3001
+    targetPort: 3001
+    nodePort: 30428
+  - name: admin
+    port: 3002
+    targetPort: 3002
+    nodePort: 32379
+  type: LoadBalancer
+
+# ---------- HTTPS 证书（自签内网 CA，SAN 含 172.31.9.58） ----------
+# 重新生成方式（openssl，SAN 见 certs/ 目录注释）：
+#   1. 生成 CA + 服务器证书（IP SAN: 172.31.9.58）
+#   2. kubectl create secret tls logto-tls -n auth-platform --cert=tls.crt --key=tls.key
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: logto-tls
+  namespace: auth-platform
+type: kubernetes.io/tls
+stringData:
+  tls.crt: |
+    -----BEGIN CERTIFICATE-----
+    MIIDTjCCAjagAwIBAgIUMnHJdYCc0m7u72hIKUEkafiTl+gwDQYJKoZIhvcNAQEL
+    BQAwIzEhMB8GA1UEAwwYQXV0aFBsYXRmb3JtIEludGVybmFsIENBMB4XDTI2MDkw
+    MTA4NDAzMVoXDTM2MDgyOTA4NDAzMVowFjEUMBIGA1UEAwwLMTcyLjMxLjkuNTgw
+    ggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDI36TgJ8p9p+0vstrb6ZTO
+    KWOE61Ph/DLmoQRPSYrt4Q0inyzp/D1ZkIckSgH1pwc4fZ4aeHvMQ1ecNtFg88ZM
+    iEqTE6vDezCRqQ5jNC5R6hezed9inIWCXFLMwy3WVrN53mVvM6O9M4og3o+V9YpE
+    pKXJ5xVTQStX+uZHw4GPqlmAi+3KTL7Q6izX5tRWTadnPh/N85bOc3/BLrvN8HG6
+    IBoYJ4mDZMMNqI7dcarfAH+3v5ZVAlknZ577SFHBiTJIkdpAriW2CFcdIkbbcnEx
+    Hti4zh1Q/i7tdoZ5rfw8iV72+VPOnAI/Rx9hFUGs3HVpsH74pK7q8LdFHpXuKeUd
+    AgMBAAGjgYYwgYMwQQYDVR0RBDowOIcErB8JOoIJbG9jYWxob3N0giVsb2d0by5h
+    dXRoLXBsYXRmb3JtLnN2Yy5jbHVzdGVyLmxvY2FsMB0GA1UdDgQWBBR7E2USdUED
+    PJvGBcBXvWJVwi7y7DAfBgNVHSMEGDAWgBSVUGO18GFTCWHL4IzkZqmOsvbgcTAN
+    BgkqhkiG9w0BAQsFAAOCAQEAQ2ORq5oG6vN84N7zqDBirqGUW2tSAf9XZtGx7mAT
+    YGovpEudiWtD5WXCZwDaXk689ivNvFAb52zSHm3QfePRfdk5OYLOuYoQNC6uc95A
+    tk0Ea8tQtaKPtPxRsvxPx4WryREFAIfQcS8gIMAt0eh7qY1EfVDye+bptNcgMwkA
+    G35asvcBdj+OsIzimetTumJm7RLYvqku4gUsNfeA9B07IodKi0BsD5mTa2YR7AKG
+    gqkAeGjjlfQL5TBn0W640tSx5P5dezxsEhCAquKfXC+1kngHfWPPbAhVOX+QnFW7
+    Y5SF6Nt+oZSXn+rh1cl3NRCStZho4fdaiogz/qmVFjztcg==
+    -----END CERTIFICATE-----
+  tls.key: |
+    -----BEGIN PRIVATE KEY-----
+    MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDI36TgJ8p9p+0v
+    strb6ZTOKWOE61Ph/DLmoQRPSYrt4Q0inyzp/D1ZkIckSgH1pwc4fZ4aeHvMQ1ec
+    NtFg88ZMiEqTE6vDezCRqQ5jNC5R6hezed9inIWCXFLMwy3WVrN53mVvM6O9M4og
+    3o+V9YpEpKXJ5xVTQStX+uZHw4GPqlmAi+3KTL7Q6izX5tRWTadnPh/N85bOc3/B
+    LrvN8HG6IBoYJ4mDZMMNqI7dcarfAH+3v5ZVAlknZ577SFHBiTJIkdpAriW2CFcd
+    IkbbcnExHti4zh1Q/i7tdoZ5rfw8iV72+VPOnAI/Rx9hFUGs3HVpsH74pK7q8LdF
+    HpXuKeUdAgMBAAECggEAAKizKsUWpfjiD1D/5M7MXSzHlc0L1mb0Z8tJb1UnboZZ
+    e66YACCCtwOBXf4cKYklveqzlRSmG1JxPCL15uKF2QRtcjQTUS3bR+8NDAhEyqIA
+    9+bDc9hdm8LfxqoxQU3BgvnWzVmXBOzhXCA+ylgm3vjHTnVCnaZOFRjOnpemmikM
+    aKqaB1QdqexRjKHCnQQbNZWl115akgT/ZkBm0msNNgLtUavWb4NOd2yLx4ifRRds
+    9OLv/LWaQmZcibst/exLU9DgXJ9E+VPTXf0EYwYx35lyLHvhY8itnhSld6YLmDLs
+    Ui7uhbRj3sNOW9DxKCZTd2chZQjQ3bMb0/Bq/MqcpQKBgQD+l4cUR0ossBpL0lQV
+    NFbUEmC5SLWsvT3fA0Sg4XViqo4RWnO0iiiYp6N8X8anppndYGRpUx0nEl5Kp3bu
+    XAyE9UfUfcABM89/5VfKPrFwRqqI7Ff2Ke+uRgQDwouUp2MZjCIWT5omRDEfE5pZ
+    Ri1ICHDlPFmMRoWj7nosttSK0wKBgQDJ/A69BJ/AhNoIX7KafMqAWcw5QSPKqiIT
+    8VnxdsCPlMOmZDaudC8XqxC8qm+2Knmgx2hsiO7CJ1kuHWHK3WgjEr+woNbPQim5
+    rAWTL7U37tY4EXUc1gIeHQMfiUcG2Gcj83hVvjfya/4K35Px0UWpiQV/WAYxgesK
+    8lS4vlv6TwKBgQDugV4WbULb4o6AAaarxsChJCZg7fDkxtSznAgq/4xMxqMZNre2
+    psepW0MZPVCJttXmQmtPEIH7HIYhQgl0+97uoCqOss+xUKxPkLdRzLHGES2p4F/3
+    SQo1JXqVWygQN0/rmxBD/obW2oN6LY8nm0rIdL/uwT7S3y5LiRoD0bQD6QKBgQCb
+    pZad5aBNNJLnfQcesSdC/O+49w9jrvMPtx5+SepdOmACKptQl8tqS7JcEGKBV/3d
+    /YvkhyiliLjaJl4je7YxwNLigy7FC9EneP3azBqzfWKqVhmPHQMIvYaYmKqZBc2F
+    EKscN7bZIorjSiKxZ3htCl+oH+a1482B4/eRXW93VQKBgCWywdkNJpbxqEMit8q5
+    Lrqn8qka8YdxDU0WxREYhcGUwQk4g0LNoMlrZ3Ggz2ReJKlbV/Jqt60McoyH7Cfo
+    fvW3TuB9y3nr3Z+gkxMKWsNI7ZmM4S+G6uzRQ8Lc4Bqw1LI8XtE4H1vgB2eAKN/K
+    22Kh/d+hh/wMwfo4XkJ1fXte
+    -----END PRIVATE KEY-----

@@ -1,0 +1,22 @@
+# ============================================================
+# 统一 HTTPS 入口（Envoy Gateway）
+#   一个 Gateway / 一个 LoadBalancer IP，按 Host 分流到各 APP
+#   每个 APP 一条 HTTPRoute + 一份 SecurityPolicy（各自 OIDC 回调域名）
+# gatewayClassName 用集群里已 ACCEPTED 的 envoy-gateway-class
+# ============================================================
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: agents
+  namespace: auth-platform
+spec:
+  gatewayClassName: agents-class
+  listeners:
+  - name: https
+    port: 443
+    protocol: HTTPS
+    hostname: "*.example.com"
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - name: eg-agents-tls   # 通配证书 *.example.com（内部 CA 签发）

@@ -1,0 +1,65 @@
+# ===========================================================
+# Agent Demo — 用户信息示例服务
+# 验证认证是否生效:
+#   - 所有请求必须经 Envoy（NetworkPolicy 仅放行 envoy → agent）
+#   - 未登录: SecurityPolicy.oidc 302 到认证中心登录页
+#   - 已登录: 读取 Envoy 注入的 x-auth-roles，返回身份与角色
+# 注意：本服务只开放 ClusterIP，不对外暴露，外部请求唯一入口是 Envoy
+# ===========================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent1
+  namespace: auth-platform
+  labels:
+    app: agent1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent1
+  template:
+    metadata:
+      labels:
+        app: agent1
+    spec:
+      containers:
+      - name: agent1
+        image: yhg.hub.bjuci.io/library/echo-server:latest
+        imagePullPolicy: Always
+        ports:
+        - name: http
+          containerPort: 80
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 80
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "50m"
+          limits:
+            memory: "64Mi"
+            cpu: "200m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent1
+  namespace: auth-platform
+spec:
+  selector:
+    app: agent1
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 80
+  type: ClusterIP

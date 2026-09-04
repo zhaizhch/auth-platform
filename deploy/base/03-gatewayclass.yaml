@@ -1,0 +1,39 @@
+# ============================================================
+# 数据面自定义（seccomp 规避）+ 专属 GatewayClass
+# 目的：部分节点 runc 加载默认 seccomp 过滤报 errno 524，导致数据面 pod 起不来；
+#       这里把数据面 pod 的 seccomp 设为 Unconfined。
+# 关联方式：GatewayClass.parametersRef -> EnvoyProxy（EG 的正式机制）
+# ============================================================
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: agents-dataplane
+  namespace: auth-platform
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyDeployment:
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              template:
+                spec:
+                  securityContext:
+                    seccompProfile:
+                      type: Unconfined
+                  nodeSelector:
+                    kubernetes.io/hostname: bjcjgpu005
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: agents-class
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: agents-dataplane
+    namespace: auth-platform

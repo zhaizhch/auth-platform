@@ -1,0 +1,27 @@
+# ============================================================
+# 攻克数据面 TLS 信任：把内部 CA 注入 OIDC token 集群
+# Envoy oauth2 filter 去 https://logto...:3001/oidc/token 换 token 时，
+# 默认用系统 CA bundle(/etc/ssl/certs/ca-certificates.crt)校验服务端证书，
+# 而 Logto 由内网自签 CA 签发 → CERTIFICATE_VERIFY_FAILED。
+# 这里用 EnvoyPatchPolicy 把该集群的 trusted_ca 替换为内部 CA(inline_string)。
+# 集群名由 EG 从 tokenEndpoint 主机名推导：logto_auth-platform_svc_cluster_local_3001
+# ============================================================
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyPatchPolicy
+metadata:
+  name: eg-trust-logto-ca
+  namespace: auth-platform
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: agents
+  type: JSONPatch
+  jsonPatches:
+  - name: logto_auth-platform_svc_cluster_local_3001
+    type: type.googleapis.com/envoy.config.cluster.v3.Cluster
+    operation:
+      op: replace
+      path: /transport_socket/typed_config/common_tls_context/validation_context/trusted_ca
+      value:
+        inline_string: "-----BEGIN CERTIFICATE-----\nMIIDJzCCAg+gAwIBAgIUTy20Anp2YFnLAtAgD9rj4D6SQV4wDQYJKoZIhvcNAQEL\nBQAwIzEhMB8GA1UEAwwYQXV0aFBsYXRmb3JtIEludGVybmFsIENBMB4XDTI2MDkw\nMTA4NDAzMVoXDTM2MDgyOTA4NDAzMVowIzEhMB8GA1UEAwwYQXV0aFBsYXRmb3Jt\nIEludGVybmFsIENBMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAmdIQ\nvQFJjW35IxStaQZ5+Klj7Ukm38m9Kspa3QyyDkugmdkTHeEqFl44I/kLX6EUTLaz\nDg8YnC6OoeidgZkBrjuGM6qcPhcBa+cPwqcNnisljXNBEc1tU18aQmJfGtHAMtA5\nz1txCGaFtkdu8/5u6exAle+Qucxpss/97sonPL4RUFjn4dyBsU9xFU2ITBNfWkw7\nD2jL9AFZx2kTUQm6wXq/4BwGL/FBOFQuUiie8H9WJzURln+TO5z+5vRdomsxTz6J\nM0q9kvySW4bUNAPOZi/wUUF/UP/wxUoNB2W+xhsgR7QJkLaswS0CPILAazG+yif7\nl8D15bF2oDAZxVFrRQIDAQABo1MwUTAdBgNVHQ4EFgQUlVBjtfBhUwlhy+CM5Gap\njrL24HEwHwYDVR0jBBgwFoAUlVBjtfBhUwlhy+CM5GapjrL24HEwDwYDVR0TAQH/\nBAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAQEADoO0H2hLmOcQrMCRhw+vdRtvoX6g\n3j9PunD4eZdTcmvOrJeyUBLckivKPab1SvVWWDSw8bXuEQotZh7uj6dijOH6P1QI\n7R/IGLNJro7qAOXQ4MXnBXDI2d+PWjOWpXLeP++jJ9JsCqB2oLnMY8z+wJmkAZu+\nyx80AOkCK8phd/rIn8KXADa23soabx7ft880el838n4AQaZkY3kybpw8vjayDEr7\nm4RkzjQmq655RqpJ9621tg6+10cgV0U+KWkTEtBVp2fj7PyjeVt9HBH5zK6s1MjK\nm8NUKMBHR4ws+eLGr+F8bK5tZL602TNRoOMuzjblBrObndHUchdiP8AhjQ==\n-----END CERTIFICATE-----\n"

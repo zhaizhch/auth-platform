@@ -1,0 +1,52 @@
+# __AGENT__ 的 SecurityPolicy：oidc 登录 + jwt 验签 + claimToHeaders
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: __AGENT__-oidc
+  namespace: auth-platform
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: __AGENT__
+  oidc:
+    clientID: __CLIENT_ID__
+    clientSecret:
+      name: eg-__AGENT__-oidc
+    redirectURL: https://__DOMAIN__/oauth2/callback
+    logoutPath: /oauth2/logout
+    scopes:
+    - openid
+    - profile
+    - roles
+    - custom_data
+    cookieNames:
+      idToken: IdToken-__AGENT__
+      accessToken: AccessToken-__AGENT__
+    provider:
+      issuer: https://172.31.9.58:3001/oidc
+      authorizationEndpoint: https://172.31.9.58:3001/oidc/auth
+      tokenEndpoint: https://logto.auth-platform.svc.cluster.local:3001/oidc/token
+    forwardAccessToken: true
+    refreshToken: false
+  jwt:
+    providers:
+    - name: __AGENT__
+      issuer: https://172.31.9.58:3001/oidc
+      audiences:
+      - __CLIENT_ID__
+      localJWKS:
+        type: Inline
+        inline: '{"keys": [{"kty": "EC", "use": "sig", "kid": "iQXLcN--NQIzAAYgeo-qnnhUa4oPf5orbzOKM5fPNcw", "alg": "ES384", "crv": "P-384", "x": "sIiU3cmbNTqJ81KV5K3MF1c2RHtadfhdBfbHc4xqEQ4smxupsu2qPAswcwtwDHiR", "y": "O0LpJ9xyVbb2gLlsrT-BAaF5c8XeH2zVNyU26jVVHUFqpMYo8GrIy9IrqPCgm6hF"}]}'
+      extractFrom:
+        cookies:
+        - IdToken-__AGENT__
+      claimToHeaders:
+      - header: x-auth-provider
+        claim: aud
+      - header: x-auth-uid
+        claim: sub
+      - header: x-auth-roles
+        claim: roles
+      - header: x-auth-custom-data
+        claim: custom_data

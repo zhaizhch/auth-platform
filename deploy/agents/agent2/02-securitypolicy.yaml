@@ -1,0 +1,53 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: agent2-oidc
+  namespace: auth-platform
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: agent2
+  oidc:
+    clientID: agent2
+    clientSecret:
+      name: eg-agent2-oidc
+    redirectURL: https://agent2.example.com/oauth2/callback
+    logoutPath: /oauth2/logout
+    scopes:
+    - openid
+    - profile
+    - roles
+    - custom_data
+    cookieNames:
+      idToken: IdToken-agent2
+      accessToken: AccessToken-agent2
+    provider:
+      issuer: https://172.31.9.58:3001/oidc
+      authorizationEndpoint: https://172.31.9.58:3001/oidc/auth
+      tokenEndpoint: https://logto.auth-platform.svc.cluster.local:3001/oidc/token
+    forwardAccessToken: true
+    refreshToken: false
+  jwt:
+    providers:
+    - name: agent2
+      issuer: https://172.31.9.58:3001/oidc
+      audiences:
+      - agent2
+      localJWKS:
+        type: Inline
+        inline: '{"keys": [{"kty": "EC", "use": "sig", "kid": "iQXLcN--NQIzAAYgeo-qnnhUa4oPf5orbzOKM5fPNcw",
+          "alg": "ES384", "crv": "P-384", "x": "sIiU3cmbNTqJ81KV5K3MF1c2RHtadfhdBfbHc4xqEQ4smxupsu2qPAswcwtwDHiR",
+          "y": "O0LpJ9xyVbb2gLlsrT-BAaF5c8XeH2zVNyU26jVVHUFqpMYo8GrIy9IrqPCgm6hF"}]}'
+      extractFrom:
+        cookies:
+        - IdToken-agent2
+      claimToHeaders:
+      - header: x-auth-provider
+        claim: aud
+      - header: x-auth-uid
+        claim: sub
+      - header: x-auth-roles
+        claim: roles
+      - header: x-auth-custom-data
+        claim: custom_data
